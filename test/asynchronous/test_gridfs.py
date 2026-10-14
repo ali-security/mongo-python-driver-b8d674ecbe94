@@ -33,6 +33,7 @@ from test.utils_shared import one
 
 import gridfs
 from bson.binary import Binary
+from bson.min_key import MinKey
 from gridfs.asynchronous.grid_file import DEFAULT_CHUNK_SIZE, AsyncGridOutCursor
 from gridfs.errors import CorruptGridFile, FileExists, NoFile
 from pymongo.asynchronous.database import AsyncDatabase
@@ -41,6 +42,7 @@ from pymongo.errors import (
     ConfigurationError,
     NotPrimaryError,
     ServerSelectionTimeoutError,
+    WriteError,
 )
 from pymongo.read_preferences import ReadPreference
 
@@ -130,6 +132,28 @@ class TestGridfs(AsyncIntegrationTest):
         await gfs.delete(oid)
         self.assertEqual(0, await self.db.fs.files.count_documents({}))
         self.assertEqual(0, await self.db.fs.chunks.count_documents({}))
+
+    # Server versions older than 5.0 do not support document values with
+    # "$"-prefixed keys.
+    @async_client_context.require_version_min(5, 0)
+    async def test_injected_file_id_does_not_match_other_files(self):
+        oid = await self.fs.put(b"hello world", chunkSize=2)
+        injected_id = {"$gt": MinKey()}
+
+        with self.assertRaises(NoFile):
+            await self.fs.get(injected_id)
+
+        try:
+            await self.fs.delete(injected_id)
+        except WriteError:
+            # Newer server versions reject an equality match on "_id" whose
+            # operand itself resembles a query operator, even when the
+            # driver safely wraps it in "$eq".
+            pass
+
+        self.assertEqual(1, await self.db.fs.files.count_documents({}))
+        self.assertEqual(6, await self.db.fs.chunks.count_documents({"files_id": oid}))
+        self.assertEqual(b"hello world", await (await self.fs.get(oid)).read())
 
     async def test_list(self):
         self.assertEqual([], await self.fs.list())

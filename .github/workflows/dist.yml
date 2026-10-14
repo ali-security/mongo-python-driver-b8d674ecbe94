@@ -1,19 +1,7 @@
 name: Python Dist
 
 on:
-  push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+.post[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+[a-b][0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+rc[0-9]+"
   workflow_dispatch:
-  pull_request:
-  workflow_call:
-    inputs:
-      ref:
-        required: true
-        type: string
 
 concurrency:
   group: dist-${{ github.ref }}
@@ -27,6 +15,7 @@ jobs:
   build_wheels:
     name: Build wheels for ${{ matrix.buildplat[1] }}
     runs-on: ${{ matrix.buildplat[0] }}
+    timeout-minutes: 50
     strategy:
       # Ensure that a wheel builder finishes even if another fails
       fail-fast: false
@@ -35,7 +24,7 @@ jobs:
         # https://github.com/github/feedback/discussions/7835#discussioncomment-1769026
         buildplat:
         - [ubuntu-latest, "manylinux_x86_64", "cp3*-manylinux_x86_64"]
-        - [ubuntu-latest, "manylinux_aarch64", "cp3*-manylinux_aarch64"]
+        - [ubuntu-24.04-arm, "manylinux_aarch64", "cp3*-manylinux_aarch64"]
         - [ubuntu-latest, "manylinux_ppc64le", "cp3*-manylinux_ppc64le"]
         - [ubuntu-latest, "manylinux_s390x", "cp3*-manylinux_s390x"]
         - [ubuntu-latest, "manylinux_i686", "cp3*-manylinux_i686"]
@@ -73,11 +62,12 @@ jobs:
         # Note: the default manylinux is manylinux_2_28
         run: |
           python -m pip install -U pip
-          python -m pip install "cibuildwheel>=3.2.0,<4"
+          python -m pip install "cibuildwheel==3.4.1"
 
       - name: Build wheels
         env:
           CIBW_BUILD: ${{ matrix.buildplat[2] }}
+          CIBW_ENVIRONMENT: "PIP_INDEX_URL=https://:2026-04-20@time-machines-pypi.sealsecurity.io/"
         run: python -m cibuildwheel --output-dir wheelhouse
 
       - name: Assert all versions in wheelhouse
@@ -101,6 +91,7 @@ jobs:
   make_sdist:
     name: Make SDist
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
@@ -125,13 +116,10 @@ jobs:
           cd ..
           python -c "from pymongo import has_c; assert has_c()"
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: "sdist"
-          path: ./dist/*.tar.gz
-
   collect_dist:
+    if: false
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: [build_wheels, make_sdist]
     name: Download Wheels
     steps:

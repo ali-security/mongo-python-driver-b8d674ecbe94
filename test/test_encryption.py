@@ -35,6 +35,7 @@ from test.test_bulk import BulkTestBase
 from test.utils import flaky
 from threading import Thread
 from typing import Any, Dict, Mapping, Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -226,6 +227,28 @@ class TestClientOptions(PyMongoTestCase):
         opts = AutoEncryptionOpts(KMS_PROVIDERS, "keyvault.datakeys")
         client = self.simple_client(auto_encryption_opts=opts, connect=False)
         self.assertEqual(get_client_opts(client).auto_encryption_opts, opts)
+
+
+class TestKmsRequestEndpoint(PyMongoTestCase):
+    def test_kms_request_unix_socket_endpoint_rejected(self):
+        # PYTHON-5990: a KMS endpoint ending in ".sock" must be rejected before
+        # any connection is opened, so a malicious masterKey.endpoint cannot
+        # make the driver send the KMS request to a local Unix domain socket.
+        connect_calls = []
+
+        def _connect_kms(address, opts):
+            connect_calls.append(address)
+            raise OSError("connection refused")
+
+        encryption_io = encryption._EncryptionIO.__new__(encryption._EncryptionIO)
+        encryption_io._kms_ssl_contexts = {}
+        kms_context = MagicMock(
+            endpoint="/var/run/docker.sock", kms_provider="kmip", usleep=0, bytes_needed=0
+        )
+        with patch.object(encryption, "_connect_kms", _connect_kms):
+            with self.assertRaisesRegex(ConfigurationError, "Invalid KMS endpoint"):
+                encryption_io.kms_request(kms_context)
+        self.assertEqual([], connect_calls)
 
 
 class EncryptionIntegrationTest(IntegrationTest):
@@ -1231,6 +1254,14 @@ class TestCustomEndpoint(EncryptionIntegrationTest):
     def test_04_kmip_endpoint_invalid_port(self):
         master_key = {"keyId": "1", "endpoint": "localhost:12345"}
         with self.assertRaisesRegex(EncryptionError, "localhost:12345"):
+            self.client_encryption.create_data_key("kmip", master_key=master_key)
+
+    def test_kmip_endpoint_unix_socket_rejected(self):
+        # PYTHON-5990: a masterKey.endpoint ending in ".sock" must not be
+        # treated as a Unix domain socket path. KMS endpoints must be a TCP
+        # host[:port].
+        master_key = {"keyId": "1", "endpoint": "example.sock"}
+        with self.assertRaisesRegex(EncryptionError, "Invalid KMS endpoint"):
             self.client_encryption.create_data_key("kmip", master_key=master_key)
 
     @unittest.skipUnless(any(AWS_CREDS.values()), "AWS environment credentials are not set")
